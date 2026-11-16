@@ -1,42 +1,44 @@
-name: Kernel Builder Redmi 9T juice based on AOSPA
+name: Kernel Builder Redmi 9T juice (SukiSU-Ultra + KPM)
 
-on: [push]
+on:
+  push:
+  workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
     - name: Checkout kernel source
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       with:
         repository: ShelbyHell/sunrise_kernel_juice
         ref: topaz
         path: source
+
     - name: Checkout zipper
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       with:
         repository: lemniskett/AnyKernel3
         path: zipper
-    - name: Integrate KernelSU
+
+    - name: Integrate SukiSU-Ultra and KPM
       run: |
         cd source
 
-        echo "[+] Append kernel params to kprobes"
+        echo "[+] Append kernel params for SukiSU-Ultra, Kprobes, and KPM"
+        echo "CONFIG_KSU=y" >> arch/arm64/configs/vendor/bengal-perf_defconfig
         echo "CONFIG_KPROBES=y" >> arch/arm64/configs/vendor/bengal-perf_defconfig
         echo "CONFIG_HAVE_KPROBES=y" >> arch/arm64/configs/vendor/bengal-perf_defconfig
         echo "CONFIG_KPROBE_EVENTS=y" >> arch/arm64/configs/vendor/bengal-perf_defconfig
+        echo "CONFIG_KPM=y" >> arch/arm64/configs/vendor/bengal-perf_defconfig
+        echo "CONFIG_KALLSYMS=y" >> arch/arm64/configs/vendor/bengal-perf_defconfig
+        echo "CONFIG_KALLSYMS_ALL=y" >> arch/arm64/configs/vendor/bengal-perf_defconfig
 
-        git clone https://github.com/tiann/KernelSU
-        cd KernelSU
-        git stash && git pull
-        cd ../
-        cp -r KernelSU/kernel drivers/kernelsu
-
-        echo "[+] Add kernel su driver to Makefile"
-
-        echo "obj-y += kernelsu/" >> drivers/Makefile
+        echo "[+] Run SukiSU-Ultra setup script"
+        curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash -s builtin
 
         echo "[+] Done."
+
     - name: Android kernel build
       uses: lemniskett/android-kernel-actions@master
       id: build
@@ -47,8 +49,43 @@ jobs:
         compiler: proton-clang/master/binutils
         defconfig: vendor/bengal-perf_defconfig
         image: Image
+
+    - name: Locate and verify build output
+      run: |
+        echo "[+] Searching for built kernel Image..."
+        IMAGE_PATH=$(find source -type f -name "Image" -path "*/boot/*" | head -n 1)
+
+        if [ -z "$IMAGE_PATH" ]; then
+          echo "::error::Kernel Image not found anywhere under source/. Build likely failed silently."
+          echo "[+] Dumping possible output dirs for debugging:"
+          find source -type d -iname "*boot*" 2>/dev/null
+          exit 1
+        fi
+
+        echo "[+] Found Image at: $IMAGE_PATH"
+        echo "IMAGE_PATH=$IMAGE_PATH" >> "$GITHUB_ENV"
+
+        # Sanity check it's not empty/corrupt
+        SIZE=$(stat -c%s "$IMAGE_PATH")
+        if [ "$SIZE" -lt 1000000 ]; then
+          echo "::error::Image file is suspiciously small ($SIZE bytes) — likely a bad/incomplete build."
+          exit 1
+        fi
+        echo "[+] Image size OK: $SIZE bytes"
+
+    - name: Copy kernel output into zipper
+      run: |
+        cp "$IMAGE_PATH" zipper/Image
+        echo "[+] Copied Image into zipper/"
+
+        # Uncomment and adjust if your anykernel.sh expects these:
+        # cp source/out/arch/arm64/boot/dtbo.img zipper/dtbo.img
+        # cp source/out/arch/arm64/boot/dtb.img zipper/dtb.img
+
+        ls -la zipper/
+
     - name: Upload Build
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
-        name: Image
-        path: /home/runner/work/kernelsu-xiaomi-juice/kernelsu-xiaomi-juice/zipper
+        name: SukiSU-Kernel-Juice
+        path: ${{ github.workspace }}/zipper
